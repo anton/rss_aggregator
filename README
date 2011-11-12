@@ -1,0 +1,2 @@
+rss_aggregator is a RSS feed reader lib written in C with use of glibc, 
+libxml2 and uthash.
