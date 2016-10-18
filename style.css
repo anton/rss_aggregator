@@ -1,0 +1,38 @@
+a:link {
+    text-decoration: none;
+    color: #000000;
+}
+
+a:visited {
+        color: #aa0000;
+}
+
+a:hover {
+    color: #ffcc66;
+    text-decoration: underline;
+}
+
+body {
+    background: white;
+    font-family: sans-serif;
+    font-size: 10pt;
+    color: black;
+}
+
+h1 {
+    color: #eeeeee;
+}
+
+h4 {
+    color: #ffcc66;
+}
+
+table {
+    font-family: sans-serif;
+    font-size: 26pt;
+    border-spacing: 10px 2px;
+}
+
+td {
+    padding: 26px;
+}

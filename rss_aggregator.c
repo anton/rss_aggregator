@@ -1,392 +1,371 @@
-/*
-This file is part of rss_aggregator.
-
-rss_aggregator is free software: you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
-
-rss_aggregator is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License
-along with rss_aggregator.  If not, see <http://www.gnu.org/licenses/>. */
-
-#include <stdio.h>
-#include <stdlib.h>
-#include <search.h>
-#include <string.h>
-#include <libxml/xmlreader.h>
 #include "utlist.h"
-
+#include <unistd.h>
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <time.h>
+#include <libxml/xmlreader.h>
 #ifdef LIBXML_READER_ENABLED
 
-static int initial_read;
-static int create_failed;
-static unsigned int hash_size;
+enum xmltype { UNDEF, RDF, RSS, FEED };
 
-typedef struct el {
-    char *name;
-    struct el *next;
-} el;
-
-el *feed_head = NULL;
-el *key_head = NULL;
-
-void (*new_entry_fn)(char *, char *, char *) = NULL;
-
-/**
- * add_entry:
- * @key: the key to be added
- *
- * Add an entry to the hash
- */
-static void add_entry(const char *key)
+typedef struct post_element
 {
-    ENTRY e, *ep;
-    el *new_key = malloc(sizeof(el));
-    fprintf(stderr, "Adding %s\n", key);
+	char *name;
+	char *tag;
+	time_t pub_epoch;
+	char *url;
+	char *summary;
+	char *pubdate;
+	struct post_element *next;
+} post_element;
 
-    new_key->name = strdup(key);
-    LL_APPEND(key_head, new_key);
-
-    e.key = new_key->name;
-    ep = hsearch(e, ENTER);
-    if (ep == NULL) {
-        fprintf(stderr, "entry failed\n");
-        create_failed = 1;
-    }
-}
-
-/**
- * check_and_print:
- * @name: tag name
- * @what: what to search for
- * @reader: the xmlReader
- *
- * Helper function for printing value if @name and @what match
- */
-static void check_and_print(const xmlChar *name,
-        const char *what,
-        xmlTextReaderPtr reader)
+typedef struct feed_element
 {
-    const xmlChar *value;
-    if ((!xmlStrcmp(name, (const xmlChar *)what)) &&
-            XML_READER_TYPE_ELEMENT ==
-            xmlTextReaderNodeType(reader)) {
-        (void)xmlTextReaderRead(reader);
-        value = xmlTextReaderConstValue(reader);
-        printf("%s: %s\n", what, (char *)value);
-    }
-}
+	char *url;
+	char *tag;
+	enum xmltype type;
+	struct feed_element *next;
+} feed_element;
 
-/**
- * NAMEIS:
- * @a: char * to match with
- *
- * Helper macro function for checking if const xmlChar *name is matching with a.
- */
-#define NAME_IS(a) ((0 == xmlStrcmp(name, (const xmlChar *)(a))) && \
-        XML_READER_TYPE_ELEMENT == xmlTextReaderNodeType(reader))
+post_element *posts_head = NULL;
+feed_element *feeds_head = NULL;
 
-/**
- * check_and_get:
- * @name: tag name
- * @what: what to search for
- * @reader: the xmlReader
- *
- * Helper function for getting value if @name and @what match
- */
-static char * check_and_get(const xmlChar *name,
-        const char *what,
-        xmlTextReaderPtr reader)
+void (*new_entry_callback)(char *, char *, char *, char *) = NULL;
+
+int cmp_posts(const post_element *p1, const post_element *p2)
 {
-    const xmlChar *value;
-    if ((!xmlStrcmp(name, (const xmlChar *)what)) &&
-            XML_READER_TYPE_ELEMENT ==
-            xmlTextReaderNodeType(reader)) {
-        (void)xmlTextReaderRead(reader);
-        value = xmlTextReaderConstValue(reader);
-        /* printf("%s: %s\n", what, (char *)value); */
-        return (char *)value;
-    }
-
-    return NULL;
+	if (p1 == NULL || p2 == NULL)
+		return 1;
+	return strcmp(p1->name, p2->name);
 }
 
-/**
- * process_feed:
- * @reader: the xmlReader
- *
- * Process the feed type
- */
-static void process_feed(xmlTextReaderPtr reader) {
-    int ret;
-    const xmlChar *name, *value;
-    ret = xmlTextReaderRead(reader);
-    while (ret == 1) {
-        name = xmlTextReaderConstName(reader);
-        if ((!xmlStrcmp(name, (const xmlChar *)"entry"))) {
-            char title[256];
-            char id[256];
-            char summary[256];
-            title[0] = '\0';
-            id[0] = '\0';
-            summary[0] = '\0';
-            for(;;) {
-                name = xmlTextReaderConstName(reader);
-                if (NAME_IS("title"))
-                    strncpy(title, check_and_get(name, "title", reader), 256);
-                if (NAME_IS("id"))
-                    strncpy(id, check_and_get(name, "id", reader), 256);
-                if (NAME_IS("summary"))
-                    strncpy(summary, check_and_get(name, "summary", reader),
-                            256);
-
-                if (strlen(summary)) {
-                    if (initial_read) {
-                        add_entry(title);
-                        fprintf(stderr, "id: %s\n", id);
-                        fprintf(stderr, "summary: %s\n", summary);
-                    } else {
-                        ENTRY e, *ep;
-                        e.key = title;
-                        ep = hsearch(e, FIND);
-                        if (!ep) {
-                            add_entry(title);
-                            (*new_entry_fn)(id, title, summary);
-                        }
-                    }
-                    title[0] = '\0';
-                    id[0] = '\0';
-                    summary[0] = '\0';
-                }
-
-                /* check_and_print(name, "summary", reader); */
-                if ((!xmlStrcmp(name, (const xmlChar *)"entry")) &&
-                        XML_READER_TYPE_END_ELEMENT ==
-                        xmlTextReaderNodeType(reader)) {
-                    break;
-                }
-                ret = xmlTextReaderRead(reader);
-            }
-        }
-        ret = xmlTextReaderRead(reader);
-    }
-    if (ret != 0) {
-        fprintf(stderr, "failed to parse\n");
-    }
-}
-
-/**
- * process_rss_rdf:
- * @reader: the xmlReader
- * @rdf: 0 for rss and 1 for rdf
- *
- * Process the rss and rdf type
- */
-static void process_rss_rdf(xmlTextReaderPtr reader, const int rdf)
+int cmp_epochs(const post_element *p1, const post_element *p2)
 {
-    int ret;
-    const xmlChar *name, *value;
-    ret = xmlTextReaderRead(reader);
-    ret = xmlTextReaderRead(reader);
-
-    name = xmlTextReaderConstName(reader);
-
-    if (xmlStrcmp(name, (const xmlChar *)"channel")) {
-            fprintf(stderr, "Bad document: did not immediately find the channel"
-                    " element.\n");
-        return;
-    }
-
-    if (rdf) {
-        ret = xmlTextReaderRead(reader);
-        ret = xmlTextReaderRead(reader);
-    }
-
-    while (ret == 1) {
-        name = xmlTextReaderConstName(reader);
-        if ((!xmlStrcmp(name, (const xmlChar *)"item"))) {
-            char title[256];
-            char link[256];
-            char description[256];
-            title[0] = '\0';
-            link[0] = '\0';
-            description[0] = '\0';
-            for(;;) {
-                name = xmlTextReaderConstName(reader);
-
-                if (NAME_IS("title"))
-                    strncpy(title, check_and_get(name, "title", reader), 256);
-                if (NAME_IS("link"))
-                    strncpy(link, check_and_get(name, "link", reader), 256);
-                if (NAME_IS("description"))
-                    strncpy(description,
-                            check_and_get(name, "description", reader), 256);
-
-                if (strlen(description)) {
-                    if (initial_read) {
-                        add_entry(title);
-                        fprintf(stderr, "link: %s\n", link);
-                        fprintf(stderr, "description: %s\n", description);
-                    } else {
-                        ENTRY e, *ep;
-                        e.key = title;
-                        ep = hsearch(e, FIND);
-                        if (!ep) {
-                            add_entry(title);
-                            (*new_entry_fn)(title, link, description);
-                        }
-                    }
-                    title[0] = '\0';
-                    link[0] = '\0';
-                    description[0] = '\0';
-                }
-
-                if ((!xmlStrcmp(name, (const xmlChar *)"item")) &&
-                        XML_READER_TYPE_END_ELEMENT ==
-                        xmlTextReaderNodeType(reader)) {
-                    break;
-                }
-                ret = xmlTextReaderRead(reader);
-            }
-        }
-        ret = xmlTextReaderRead(reader);
-    }
+	if (p1 == NULL || p2 == NULL)
+		return 1;
+	return p1->pub_epoch < p2->pub_epoch;
 }
 
-/**
- * streamFile:
- * @filename: the file name to parse
- *
- * Parse and print information about an XML file.
- */
-static void
-streamFile(const char *filename) {
-    xmlTextReaderPtr reader;
-    int ret;
-    const xmlChar *name, *value;
-
-    reader = xmlReaderForFile(filename, NULL, 0);
-    if (reader == NULL) {
-        fprintf(stderr, "Unable to open %s\n", filename);
-        return;
-    }
-
-    do {
-        ret = xmlTextReaderRead(reader);
-        if (XML_READER_TYPE_ELEMENT == xmlTextReaderNodeType(reader)) {
-            break;
-        }
-    } while(ret == 1);
-
-    name = xmlTextReaderConstName(reader);
-    /* printf("name %s\n", (char *)name); */
-    if (xmlStrstr(name, (const xmlChar *)"rss")) {
-        process_rss_rdf(reader, /* rss */ 0);
-    } else if (xmlStrstr(name, (const xmlChar *)"rdf") ||
-            xmlStrstr(name, (const xmlChar *)"RDF")) {
-        process_rss_rdf(reader, /* rdf */ 1);
-    } else if (xmlStrstr(name, (const xmlChar *)"feed")) {
-        process_feed(reader);
-    } else {
-        printf("Bad document type\n");
-    }
-
-    xmlFreeTextReader(reader);
-}
-
-static void check_for_updates(const char *filename)
+int add_entry(const post_element *input, const char *timestamp)
 {
-    /*
-     * this initialize the library and check potential ABI mismatches
-     * between the version it was compiled for and the actual shared
-     * library used.
-     */
-    LIBXML_TEST_VERSION
+	//fprintf(stderr, "%s:%d:%s() timestamp %s\n", __FILE__, __LINE__, __func__, timestamp);
+	post_element *out = NULL;
+	post_element *tmp = (post_element *) malloc(sizeof(post_element));
+	tmp->name = strdup(input->name);
 
-    fprintf(stderr, "%s\n", __FUNCTION__);
+	struct tm tm;
+	memset(&tm, 0, sizeof(struct tm));
 
-    if (initial_read) {
-        hcreate(hash_size);
-    }
+	if (strptime(timestamp, "%a, %d %b %Y %H:%M:%S", &tm) != 0)
+	{
+		tmp->pub_epoch = mktime(&tm);
+		//fprintf(stderr, "%s:%d:%s() pub_epoch %ld\n", __FILE__, __LINE__, __func__, tmp->pub_epoch);
+	}
 
-    streamFile(filename);
+	LL_SEARCH(posts_head, out, tmp, cmp_posts);
 
-    /*
-     * Cleanup function for the XML library.
-     */
-    xmlCleanupParser();
-    /*
-     * this is to debug memory for regression tests
-     */
-    xmlMemoryDump();
+	if (out != NULL)
+	{
+		free(tmp->name);
+		free(tmp);
+		return 1;
+	}
+
+	tmp->url = strdup(input->url);
+	tmp->summary = strdup(input->summary);
+	tmp->pubdate = strdup(input->pubdate);
+	tmp->tag = strdup(input->tag);
+
+	LL_APPEND(posts_head, tmp);
+
+	return 0;
 }
 
-void add_feed(const char *feed_url)
+void add_feed(const char *tag, const char *feed_url)
 {
-    el *new_entry = malloc(sizeof(el));
-    new_entry->name = strdup(feed_url);
-    LL_APPEND(feed_head, new_entry);
-    hash_size += 20;
-};
-
-void init_rss_aggregator(void (*fn)(char *, char *, char *))
-{
-    new_entry_fn = fn;
-    initial_read = 1;
-    hash_size = 50;
-    create_failed = 0;
-};
-
-void recreate_hash(void)
-{
-    el *elt, *tmp;
-    initial_read = 1;
-    while(create_failed) {
-        create_failed = 0;
-        fprintf(stderr, "Recreating hash with size %d\n", hash_size);
-        hdestroy();
-        LL_FOREACH_SAFE(key_head, elt, tmp) {
-            LL_DELETE(key_head, elt);
-            free(elt->name);
-        }
-        hcreate(hash_size);
-        LL_FOREACH(feed_head, elt) {
-            check_for_updates(elt->name);
-        }
-        if (create_failed) {
-            hash_size *= 1.1;
-            fprintf(stderr, "Resizing hash to %d\n", hash_size);
-        }
-        sleep(30);
-    }
-    initial_read = 0;
+	feed_element *new_entry = malloc(sizeof(feed_element));
+	new_entry->url = strdup(feed_url);
+	new_entry->tag = strdup(tag);
+	new_entry->type = UNDEF;
+	LL_APPEND(feeds_head, new_entry);
 }
 
-void run_rss_aggregator(void)
+void init_rss_aggregator(void (*callback)(char *, char *, char *, char *))
 {
-    el *elt;
-    LL_FOREACH(feed_head, elt)
-        check_for_updates(elt->name);
-
-    recreate_hash();
-
-    for(;;) {
-        sleep(300);
-        LL_FOREACH(feed_head, elt)
-            check_for_updates(elt->name);
-        if (create_failed)
-            recreate_hash();
-    }
+	new_entry_callback = callback;
 }
 
-#else
-int main(void) {
-    fprintf(stderr, "XInclude support not compiled in\n");
-    exit(1);
+#define NAME_IS(a)                                                             \
+	((0 == xmlStrcmp(name, (const xmlChar *)(a))) &&                       \
+	 XML_READER_TYPE_ELEMENT == xmlTextReaderNodeType(reader))
+
+char * check_and_get(const xmlChar *name, const char *what, xmlTextReaderPtr reader)
+{
+	const xmlChar *value;
+	if ((!xmlStrcmp(name, (const xmlChar *)what)) &&
+	    XML_READER_TYPE_ELEMENT == xmlTextReaderNodeType(reader))
+	{
+		(void)xmlTextReaderRead(reader);
+		value = xmlTextReaderConstValue(reader);
+		return (char *)value;
+	}
+
+	return NULL;
 }
-#endif
+
+int process_xml(xmlTextReaderPtr reader, struct feed_element *feed)
+{
+	enum xmltype type = feed->type;
+
+	if (type == UNDEF)
+	{
+		return 1;
+	}
+
+	int ret;
+	const xmlChar *name;
+
+	if (type == RDF || type == RSS)
+	{
+		ret = xmlTextReaderRead(reader);
+		name = xmlTextReaderConstName(reader);
+
+		if (xmlStrcmp(name, (const xmlChar *)"channel"))
+		{
+			ret = xmlTextReaderRead(reader);
+			name = xmlTextReaderConstName(reader);
+		}
+
+		if (xmlStrcmp(name, (const xmlChar *)"channel"))
+		{
+			fprintf(stderr,
+					"Bad document: did not immediately find the channel"
+					" element.\n");
+			fprintf(stderr, "Got %s\n", name);
+			return 1;
+		}
+	}
+
+	if (type == RDF)
+	{
+		ret = xmlTextReaderRead(reader);
+		ret = xmlTextReaderRead(reader);
+	}
+
+	if (type == FEED)
+	{
+		ret = xmlTextReaderRead(reader);
+	}
+
+	while (ret == 1)
+	{
+		name = xmlTextReaderConstName(reader);
+		if ( ((type == RDF || type == RSS) && (!xmlStrcmp(name, (const xmlChar *)"item"))) ||
+		     ((type == FEED) && (!xmlStrcmp(name, (const xmlChar *)"entry"))))
+		{
+			char title[256];
+			char link[256];
+			char description[4096];
+			char pubdate[256];
+			char timestamp[256];
+			title[0] = '\0';
+			link[0] = '\0';
+			description[0] = '\0';
+			pubdate[0] = '\0';
+			timestamp[0] = '\0';
+			pubdate[11] = '\0';
+			pubdate[26] = '\0';
+			for (;;)
+			{
+				name = xmlTextReaderConstName(reader);
+				//fprintf(stderr, "%s:%d:%s(): name %s \n", __FILE__, __LINE__, __func__, name);
+
+				if (NAME_IS("title"))
+					strncpy(title, check_and_get(name, "title", reader), 256);
+				if (NAME_IS("pubDate"))
+				{
+					strncpy(timestamp, check_and_get(name, "pubDate", reader), 26);
+					strncpy(pubdate, timestamp, 11);
+				}
+
+				if (type == RDF || type == RSS)
+				{
+					if (NAME_IS("link"))
+						strncpy(link, check_and_get( name, "link", reader), 256);
+					if (NAME_IS("description"))
+						strncpy(description, check_and_get(name, "description", reader), 4096);
+				}
+
+				if (type == FEED)
+				{
+					if (NAME_IS("id"))
+						strncpy(link, check_and_get(name, "id", reader), 256);
+					if (NAME_IS("summary"))
+						strncpy(description, check_and_get(name, "summary", reader), 4096);
+				}
+
+				if (strlen(description) && strlen(pubdate))
+				{
+					//fprintf(stderr, "%s:%d:%s()\n", __FILE__, __LINE__, __func__);
+					post_element new_entry;
+					new_entry.name = title;
+					new_entry.url = link;
+					new_entry.summary = description;
+					new_entry.pubdate = pubdate;
+					new_entry.tag = feed->tag;
+
+					if (add_entry(&new_entry, timestamp) == 0)
+					{
+						(*new_entry_callback)(title, link, pubdate, description);
+					}
+					title[0] = '\0';
+					link[0] = '\0';
+					description[0] = '\0';
+					pubdate[0] = '\0';
+					timestamp[0] = '\0';
+				}
+
+				if (type == RDF || type == RSS)
+				{
+				if ((!xmlStrcmp(name, (const xmlChar *)"item")) && XML_READER_TYPE_END_ELEMENT == xmlTextReaderNodeType(reader))
+				{
+					break;
+				}
+				}
+
+				if (type == FEED)
+				{
+				if ((!xmlStrcmp(name, (const xmlChar *)"entry")) && XML_READER_TYPE_END_ELEMENT == xmlTextReaderNodeType(reader))
+				{
+					break;
+				}
+				}
+				ret = xmlTextReaderRead(reader);
+			}
+		}
+		ret = xmlTextReaderRead(reader);
+	}
+	if (ret != 0)
+	{
+		fprintf(stderr, "failed to parse\n");
+	}
+	return 0;
+}
+
+void check_for_updates(feed_element *feed)
+{
+	LIBXML_TEST_VERSION
+
+	xmlTextReaderPtr reader;
+	int ret;
+	const xmlChar *name;
+
+	reader = xmlReaderForFile(feed->url, NULL, 0);
+
+	if (reader == NULL)
+	{
+		fprintf(stderr, "Unable to open %s\n", feed->url);
+		return;
+	}
+
+	do
+	{
+		ret = xmlTextReaderRead(reader);
+		if (XML_READER_TYPE_ELEMENT == xmlTextReaderNodeType(reader))
+		{
+			break;
+		}
+	} while (ret == 1);
+
+	name = xmlTextReaderConstName(reader);
+
+	if (feed->type == UNDEF)
+	{
+		if (xmlStrstr(name, (const xmlChar *)"rss"))
+		{
+			feed->type = RSS;
+		}
+		else if (xmlStrstr(name, (const xmlChar *)"rdf") ||
+				xmlStrstr(name, (const xmlChar *)"RDF"))
+		{
+			feed->type = RDF;
+		}
+		else if (xmlStrstr(name, (const xmlChar *)"feed"))
+		{
+			feed->type = FEED;
+		}
+		else
+		{
+			fprintf(stderr, "Bad document type\n");
+		}
+	}
+
+	if (process_xml(reader, feed) != 0)
+	{
+		fprintf(stderr, "Error processing %s\n", feed->url);
+	}
+
+	xmlFreeTextReader(reader);
+	xmlCleanupParser();
+	xmlMemoryDump();
+}
+
+void html_header()
+{
+	FILE *fp;
+	fp = fopen("collection.html", "w");
+	fprintf(fp, "<!DOCTYPE html>\n");
+	fprintf(fp, "<html>\n");
+	fprintf(fp, "<head>\n");
+	fprintf(fp, "<link rel=\"stylesheet\" type=\"text/css\" "
+	            "href=\"style.css\" />\n");
+	fprintf(fp, "</head>\n");
+	fprintf(fp, "<body>\n");
+	fprintf(fp, "<table>\n");
+	fclose(fp);
+}
+
+void html_footer()
+{
+	FILE *fp;
+	fp = fopen("collection.html", "a");
+	fprintf(fp, "</table>\n");
+	fprintf(fp, "</body>\n");
+	fprintf(fp, "</html>\n");
+	fclose(fp);
+}
+
+void run_rss_aggregator(unsigned int wait)
+{
+	feed_element *feed;
+	if (wait < 900)
+	{
+		wait = 900;
+	}
+
+	for (;;)
+	{
+		sleep(3);
+		LL_FOREACH(feeds_head, feed)
+		{
+			check_for_updates(feed);
+		}
+
+		LL_SORT(posts_head, cmp_epochs);
+
+		html_header();
+		post_element *item = NULL;
+		LL_FOREACH(posts_head, item)
+		{
+			FILE *fp;
+			fp = fopen("collection.html", "a");
+			fprintf(fp, "<tr><td>%s <a href=\"%s\">%s</a> [%s]</td></tr>\n", item->pubdate, item->url, item->name, item->tag);
+			fclose(fp);
+		}
+		html_footer();
+		sleep(wait);
+	}
+}
+
+#endif // LIBXML_READER_ENABLED
